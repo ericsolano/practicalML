@@ -1,0 +1,268 @@
+---
+title: "Weight Lifting: Machine Learning Analysis"
+author: "Eric Solano"
+date: "October 21, 2015"
+output: html_document
+---
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# load the library
+library(mlbench)
+library(caret)
+library(e1071)
+library(ROCR)
+library(class)
+library(kernlab)
+library(knitr)
+
+```
+
+#1. Data cleaning and exploration
+
+The training dataset was loaded and cleaned. First, all columns with multiple missing values were removed.  
+All variables whose name start with 'kurtosis_', 'skewness_', 'max_', 'min_', 'stddev_', 'var_', 'avg_' and 'amplitude_' were removed.   
+Next, a correlation analysis was performed using the 'cor' function from the 'caret' package.  
+Highly correlated variables with correlation > 0.75 were identified and removed.  
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+#read data, replace missing values with "NA"
+
+weilift <- read.csv("pml-training.csv", na.strings=c("", ".", "NA", "#DIV/0!"))
+
+
+# remove variables whose names start with 'kurtosis_', 'skewness_', 'max_', 'min_', 'stddev_', 'var_', 'avg_', 'amplitude_'
+remcols <- names(weilift)[ substr(names(weilift),1,3) == "kur" | substr(names(weilift),1,3) == "ske" | 
+           substr(names(weilift),1,3) == "max" | substr(names(weilift),1,3) == "min" |
+           substr(names(weilift),1,3) == "std" | substr(names(weilift),1,3) == "var" |
+           substr(names(weilift),1,3) == "avg" | substr(names(weilift),1,3) == "amp" ]
+
+weilift2 <- weilift[, -which(names(weilift) %in% remcols)]
+
+# select complete cases
+
+weiliftcc <- weilift2[ complete.cases(weilift2), ]
+
+
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# correlation analysis
+
+weiliftcor <- weiliftcc[, 8:59]
+# calculate correlation matrix
+correlationMatrix <- cor(weiliftcor)
+# summarize the correlation matrix
+#print(correlationMatrix)
+#write.csv(correlationMatrix, "results/correlationMatrix.csv")
+# find attributes that are highly correlated (ideally >0.75)
+highlyCorrelated <- findCorrelation(correlationMatrix, cutoff=0.75)
+
+highCorrNames <- rownames(correlationMatrix)[highlyCorrelated]
+
+#remove highly correlated attributes
+weiliftnoncor <- weiliftcor[, -which(names(weiliftcor) %in% highCorrNames)]
+
+#put the label back
+weiliftnoncor <- data.frame(weiliftnoncor, classe=weiliftcc$classe)
+
+```
+
+The removed highly correlated variables are: `r highCorrNames`. 
+
+
+# 2. Creation of folds for cross validation using 10-fold
+
+Function 'createFolds' from package 'caret' was used for a 10-fold cross-validation analysis.  
+The 10-fold methodology breaks data into 10 sets of size n/10; trains on 9 datasets and tests on 1; and repeats 10 times.
+An accuracy value is calculated for each run and a mean accuracy is calculated at the end.   
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+nfolds <- 10
+folds <- createFolds(weiliftnoncor$classe, k = nfolds, list = TRUE, returnTrain = FALSE)
+
+#lift_folds <- lapply(folds, function(ind, dat) dat[ind,], dat = weiliftnoncor)
+#unlist(lapply(lift_folds, nrow))
+
+
+
+```
+
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+nb.accuracy.v <- vector(mode="numeric", length=nfolds)
+
+
+for (i in 1:nfolds) {
+  
+    testrows <- unlist(folds[i])
+    testset <- weiliftnoncor[testrows,] 
+    trainset <- weiliftnoncor[-testrows,]
+  
+    nbmodel <- naiveBayes(classe ~ ., data = trainset)
+    rawtestresults <- predict(nbmodel, testset[,-32], type="raw")   #shows probabilities for (A,B,C,D,E)
+    nbtestresults <- predict(nbmodel, testset[,-32])                #shows (A/B/C/D/E) 
+    nb.confusion <- table(testset[,32],nbtestresults)
+    
+    #accuracy
+    nb.accuracy.v[i] <- sum(diag(nb.confusion))/sum(nb.confusion)
+    
+    
+}
+
+# get the mean accuracy from n folds
+nb.mean_acc <- round(mean(nb.accuracy.v),2)
+
+
+```
+
+
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+knn.accuracy.v <- vector(mode="numeric", length=nfolds)
+
+#rule of thumb: k = sqrt(number of features) 
+
+neighbors <- floor(sqrt(ncol(weiliftnoncor)-1))
+
+
+for (i in 1:nfolds) {
+  
+    testrows <- unlist(folds[i])
+    testset <- weiliftnoncor[testrows,] 
+    trainset <- weiliftnoncor[-testrows,]
+    
+    cl <- trainset[,32]
+
+    knnmodel <- knn(trainset[,-32], testset[,-32], cl, k = neighbors, prob=TRUE) 
+
+    knn.confusion <- table(testset[,32], knnmodel)
+    
+    #accuracy
+    knn.accuracy.v[i] <- correct <- sum(diag(knn.confusion))/sum(knn.confusion)
+
+}
+
+
+# get the mean accuracy from n folds
+knn.mean_acc <- round(mean(knn.accuracy.v),2)
+
+
+```
+
+
+# 3. Supervised Learning using Classification  
+
+## 3.1. Use Naive-Bayes classifier to train data
+
+The Naive-Bayes classifier was used to train the training sets and to test the testing sets formed by using the 10 folds.    
+Accuracy was calculated for each one of the 10 model training/testing runs. Accuracy is defined as the number of correct 
+predictions divided by the number of total data points.  
+The mean accuracy value was calculated for the 10 accuracy values obtained. 
+
+## 3.2. Use knn classifier to train data
+
+The knn classifier was used to train the training sets and to test the testing sets formed by using the 10 folds.  
+The mean accuracy was calculated in a similar way as with the Naive-Bayes classifier.
+
+## 3.3. Compare results
+
+The confusion matrix for the Naive-Bayes classifier from one of the runs is shown below:  
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+kable(nb.confusion)
+```
+
+The confusion matrix for the knn classifier from one of the runs is shown below:  
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+kable(knn.confusion)    
+```
+   
+Figure 1 shows the comparison of those 2 methods using accuracy as the performance metric.  
+The knn classifier (in blue) performs much better with mean accuracy = `r knn.mean_acc`
+than the Naive-Bayes classifier with mean accuracy = `r nb.mean_acc` (in red).    
+Accuracy is a good performance indicator when the distribution of class labels is not skewed. 
+Out-of-sample error can be approximated as 1-accuracy (other proposed metrics from the literature mention 1 - average recall). 
+The higher the accuracy, the lower the out-of-sample error.   
+
+
+```{r echo=FALSE}
+
+x = c(1:10)
+plot(x, nb.accuracy.v, type="l", main="Figure 1: Accuracy comparison for 2 algorithms", xlab="run", ylab="Accuracy", col="red",
+     xlim=c(1,10),ylim=c(0.5, 0.9))
+#abline(h=nb.mean_acc, col="green")
+lines(x, knn.accuracy.v, col="blue")
+legend("center", 100, c("knn", "Naive-Bayes"), lty=c(1,1), lwd=c(2.5,2.5), col=c("blue","red")) 
+
+
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+ooberror <- data.frame(method=c("Naive-Bayes", "knn"), OOB_error=c(1-nb.mean_acc, 1-knn.mean_acc))
+kable(ooberror)
+```
+
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+# load the test data
+
+testds <- read.csv("pml-testing.csv", na.strings=c("", ".", "NA", "#DIV/0!"))
+
+# remove cols
+testds2 <- testds[, -which(names(testds) %in% remcols)]
+
+# select complete cases
+testdscc <- testds2[ complete.cases(testds2), ]
+
+# remove additional attributes that were highly correlated 
+testdscc2 <- testdscc[, 8:59]
+testds.final <- testdscc2[, -which(names(testdscc2) %in% highCorrNames)]
+
+
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# predict response using Naive-Bayes
+
+nbtest.final <- predict(nbmodel, testds.final)                #shows (A/B/C/D/E) 
+
+
+# predict response using knn
+knn.final <- knn(trainset[,-32], testds.final, cl, k = neighbors, prob=TRUE) 
+
+both.final <- data.frame(case=as.factor(c(1:20)), Naive.Bayes=nbtest.final, knn=knn.final)
+
+```
+
+#4. Predictions for new data
+
+A test dataset with 20 cases was used to find the predicted response from both algorithms.  
+The following table sumarizes the findings:  
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+kable(both.final)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+## references
+
+# http://spokenlanguageprocessing.blogspot.com/2011/12/evaluating-multi-class-classification.html
+
+# http://machinelearningmastery.com/feature-selection-with-the-caret-r-package/
+
+```
+
